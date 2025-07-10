@@ -1,0 +1,212 @@
+#Part 1: 我们在此先生成了每个点的运动历史，即序列ηk，其中共4097个点，6000步历史，先固定alpha，随后再通过改变alpha的值检测其方差与
+#t^(2H)
+
+using StatsBase
+using HypothesisTests
+using Distributions
+
+x_min = -2048    #2048
+x_max = 2048     #2048
+theta = 10                                # 质量幂次参数，我们依次取0，1/2，1，2，10，无穷
+num_steps = 2000                          #分别考虑100，200……2000步，步差为100，
+num_steps_history = 6000                  #ηk的长度
+num_points = x_max - x_min + 1            #点的个数
+#point_history = []                       #ηk的记录
+alpha =  1/6                              #α的取值
+H = alpha + 1/2                           #Hurst Coefficient
+
+
+#我们先一次性取出10^8个随机数
+A = rand(10^8)
+B = rand(10^8)
+#println(mean(A))
+#println(var(A))
+#println(length(A))
+
+
+#先对序列ηk进行定义，并且确定其长度为6000，共4096个点
+Yita = []
+for i in 1:num_points  
+    choosed_random_numbers = A[(i-1)*num_steps_history + 1 : i*num_steps_history]
+    push!(Yita , choosed_random_numbers)
+   # println(length(choosed_random_numbers))
+end
+# println(Yita)
+println(length(Yita))
+
+#根据序列定义确定函数
+
+function g(x)
+    return (1 - x)^( -1 / alpha ) - 1
+end
+
+History=[]
+
+for i in 1:num_points
+    Random_History=Yita[i]
+    history_each_point = []
+    #length(Random_History)
+    for j in 1:num_steps_history
+        x = Random_History[j]
+        result = g(x)
+        result = ceil(result)
+        if result > num_steps_history
+            index=-1              #just smaller than 0 is okay
+        else
+            result = Int(result)
+            index = j - result
+        end
+        #finish the random walk
+        if  index <= 0 
+            random_walk = rand([-1 , 1])
+        else
+            random_walk = history_each_point[index]
+        end
+        push!(history_each_point , random_walk)
+    end
+    push!(History, history_each_point)
+end
+
+#检测一下
+
+println(History[10])
+println(length(History[10]))
+
+#综上我们成功定义了所需要的ηk序列并且将其保存在了History数组中以便调用
+#下面我们将考虑如何对点的随机游走进行处理
+
+#Part 2 ：对于每个点，先进行一定规则的随机游走，再判断点的运动状态以及吸收态，
+
+# 定义结构体
+struct Point
+    coords::Vector{Int}   # 点的坐标
+    i::Int                # 点的索引，对点就行标号，判断点的吸收态
+    j::Int                # 点被哪个点所吸收
+    k::Int                # 点的质量
+    t::Int                # 0 为可以移动，1 为不能移动
+    history::Vector{Int}  # 点的历史，存为一个数组
+end
+
+motion_history = History                               #导入History作为点的过去行动轨迹，接下来的轨迹在这个基础上生成
+all_horizontal_differences = []                        #创建到达某一高度的点的横坐标差的数组
+all_origin_horizontal_differences = []                 #到达最后的点所对应的初始点的横坐标差
+locomotion = []                                        
+final_top_points = []                                  #到上方的点的横坐标
+final_top_points_original = []                         #与到最上方点的初始点的横坐标
+
+
+    # 定义一个函数来处理每个模拟
+#function handle_simulation(sim::Int)
+    points = [Point([2i, 0], i, 0, 1, 0, motion_history[i- x_min+ 1]) for i in x_min:x_max]       #define each point when t=0 
+    trajectories = [Point[] for _ in points]                                                      #define the trajectories（主要是点的坐标轨迹）
+        for (index, point) in enumerate(points)                                                   #"enumerate" is used for returning both index and value
+            push!(trajectories[index], point)
+        end
+    
+    # 定义一个数组，用于存储特定步数时的结果
+    special_steps_results = [Any[] for _ in 1:num_steps/100]
+    
+    # start to simulate
+    for step in 1:num_steps
+        # 每一步都重新生成随机数和 g 函数结果
+        movable_points = filter(p -> p.t == 0, points)             #每一步都只考虑能动的点
+        num_movable = length(movable_points)
+        random_numbers = splice!(B, 1:num_movable)                 # 从预生成的随机数序列中提取与能动的点的个数相同的随机数，一次性进行计算
+
+        results = map(η -> (1 - η) ^ (-1 / alpha) - 1, random_numbers)
+        results = ceil.(results)                                   #生成的随机数计算映射结果后取整
+
+        for (index, point) in enumerate(points)
+            if  point.t == 0
+                movable_index = findfirst(p -> p.i == point.i, movable_points)  
+                if  movable_index !== nothing                                      #to guarantee that evey circulation is valid, otherwise the circuliation breaks
+                    result = results[movable_index] 
+                    if result > num_steps + num_steps_history                      # 若结果过大，则显然超过其历史，故直接取随机
+                        random_change = rand([-1, 1])                              # 定义random_change 为每个点该动的方向
+                    else
+                        result = Int(result)
+                        # 校正：防止 indice 超出范围
+                        # 如果 history 不够长，随机选择方向
+                        if  length(point.history) - result <= 0
+                            random_change = rand([-1, 1])
+                        else
+                            random_change = point.history[length(point.history) - result]
+                        end
+                    end
+                end
+
+                #update the coordinates of every point
+                new_history = copy(point.history)
+                push!(new_history, random_change)                                  # update the history of each point
+                new_coords = copy(point.coords)
+                new_coords[1] += random_change                                      
+                new_coords[2] += 1
+
+                #define the new points
+                new_point = Point(new_coords, point.i, point.j, point.k, 0, new_history)        
+
+                #开始判断点的吸收态
+                for (m, p) in enumerate(points)
+                    if  m != index && points[m].coords == new_coords
+                        m1 = points[index].k
+                        m2 = points[m].k
+                        prob = m1^theta / (m1^theta + m2^theta)
+                        if  rand() < prob
+                            points[index] = Point(new_coords, points[index].i, points[index].j, m1 + m2, 0, new_history)
+                            points[m] = Point(points[m].coords, points[m].i, points[index].j, m1 + m2, 1, points[m].history)
+                        else
+                            points[m] = Point(new_coords, points[m].i, points[m].j, m1 + m2, 0, new_history)                           
+                            points[index] = Point(points[index].coords, points[index].i, points[m].j, m1 + m2, 1, points[index].history)
+                        end
+                        
+                    end
+                end
+            end
+        end
+        
+        if step in 10:10:num_steps
+            # 记录当前步数的结果
+            x_trajectories = [getfield.(trajectory, :coords) for trajectory in trajectories]
+            x_coords = [getindex.(x_traj, 1) for x_traj in x_trajectories]
+            y_coords = [getindex.(x_traj, 2) for x_traj in x_trajectories]
+
+            max_y = maximum(maximum(y) for y in y_coords)
+            top_points = []
+            top_points_origins = []
+
+        for (index, traj) in enumerate(trajectories)
+            if !isempty(traj)
+                last_point = traj[end]
+                if last_point.coords[2] == max_y
+                    push!(top_points, last_point.coords)
+                    origin_point = traj[1]
+                    push!(top_points_origins, origin_point.coords)
+                end
+            end
+        end
+
+    step_index = Int(step / 10)
+    special_steps_results[step_index] = (
+        top_points = top_points,
+        top_points_origins = top_points_origins
+    )
+
+    # ✅ 记录在该 step 时成功运动了 step 步的点
+    survivors = [p for p in points if length(trajectories[p.i - x_min + 1]) == step + 1]
+    survivor_coords = [p.coords for p in survivors]
+    survivor_origins = [trajectories[p.i - x_min + 1][1].coords for p in survivors]
+
+    push!(all_survivors_at_steps, survivor_coords)
+    push!(all_origins_of_survivors, survivor_origins)
+end
+
+    end
+    #save the results
+    push!(final_top_points, [point[1] for point in special_steps_results[2000].top_points])
+    push!(final_top_points_original, [point[1] for point in special_steps_results[2000].top_points_origins])
+
+    # 输出特定步数的结果
+    for step in keys(special_steps_results)
+        println("Step $(step/10): Top Points = $(special_steps_results[step].top_points), Origins = $(special_steps_results[step].top_points_origins)")
+    end
+      
